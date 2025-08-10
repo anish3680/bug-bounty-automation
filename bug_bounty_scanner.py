@@ -13,15 +13,22 @@ from pathlib import Path
 from datetime import datetime
 import logging
 from typing import Dict, Any
+import getpass
+import hashlib
 
 # Import all components
 from tool_manager import ToolManager
-from config_manager import ConfigManager
 from ai_manager import AIManager
+from config_manager import ConfigManager
+from history_manager import HistoryManager, ActivityType, ActivityStatus
 from updater import UpdateManager
 from ai_vuln_scanner import AIVulnScanner
 from tool_health_checker import ToolHealthChecker
 from ai_model_installer import AIModelInstaller
+try:
+    from auto_git_sync import AutoGitSync
+except ImportError:
+    AutoGitSync = None
 
 # Configure logging
 logging.basicConfig(
@@ -52,6 +59,9 @@ class BugBountyFramework:
             self.config_manager = ConfigManager()
             self.ai_manager = AIManager()
             self.updater = UpdateManager()
+            self.history = HistoryManager()
+            if AutoGitSync:
+                self.git_sync = AutoGitSync()
         except Exception as e:
             logger.error(f"Failed to initialize managers: {e}")
             print("⚠️  Some components failed to initialize. Running setup...")
@@ -157,23 +167,42 @@ class BugBountyFramework:
         print(f"\n🎯 Starting vulnerability scan for: {target}")
         print("=" * 60)
         
+        start_time = datetime.now()
+        
         try:
+            # Log scan start
+            self.history.add_entry(
+                activity_type=ActivityType.SCAN,
+                status=ActivityStatus.IN_PROGRESS,
+                target=target,
+                description=f"Vulnerability scan started for {target}",
+                details={
+                    "scan_mode": options.get('mode', 'normal'),
+                    "email_enabled": options.get('email', False),
+                    "output_dir": options.get('output_dir', '')
+                }
+            )
+            
             # Initialize scanner
             scanner = AIVulnScanner()
             
             # Perform scan
             results = await scanner.deep_scan_target(target)
             
+            # Calculate duration
+            duration = (datetime.now() - start_time).total_seconds()
+            
             # Print summary
             print(f"\n🎉 Scan completed successfully!")
             print(f"📊 Vulnerabilities found: {len(results['vulnerabilities'])}")
             print(f"🔍 Subdomains discovered: {len(results['subdomains'])}")
             print(f"📈 Risk score: {results['severity_score']}/10")
+            print(f"⏱️  Duration: {duration:.1f} seconds")
             
             # Show vulnerability breakdown
+            severity_counts = {}
             if results['vulnerabilities']:
                 print("\n🚨 Vulnerability Summary:")
-                severity_counts = {}
                 for vuln in results['vulnerabilities']:
                     severity = vuln.get('severity', 'Unknown')
                     severity_counts[severity] = severity_counts.get(severity, 0) + 1
@@ -182,6 +211,21 @@ class BugBountyFramework:
                     emoji = {'Critical': '🔴', 'High': '🟠', 'Medium': '🟡', 'Low': '🟢'}.get(severity, '⚪')
                     print(f"  {emoji} {severity}: {count}")
             
+            # Log successful scan
+            self.history.add_entry(
+                activity_type=ActivityType.SCAN,
+                status=ActivityStatus.SUCCESS,
+                target=target,
+                description=f"Scan completed successfully - {len(results['vulnerabilities'])} vulnerabilities found",
+                duration=duration,
+                results={
+                    "vulnerabilities_count": len(results['vulnerabilities']),
+                    "subdomains_count": len(results['subdomains']),
+                    "severity_score": results['severity_score'],
+                    "severity_breakdown": severity_counts
+                }
+            )
+            
             # Email results if configured
             if options.get('email') and self.config_manager.load_config('email').get('enabled'):
                 await self.send_email_report(results)
@@ -189,6 +233,19 @@ class BugBountyFramework:
             return results
             
         except Exception as e:
+            # Calculate duration even for failed scans
+            duration = (datetime.now() - start_time).total_seconds()
+            
+            # Log failed scan
+            self.history.add_entry(
+                activity_type=ActivityType.SCAN,
+                status=ActivityStatus.FAILED,
+                target=target,
+                description=f"Scan failed for {target}",
+                duration=duration,
+                errors=[str(e)]
+            )
+            
             logger.error(f"Scan failed: {e}")
             print(f"❌ Scan failed: {e}")
             return None
@@ -331,6 +388,15 @@ ADVANCED:
   python3 bug_bounty_scanner.py rollback          # Rollback updates
   python3 bug_bounty_scanner.py schedule          # Enable auto-updates
   python3 bug_bounty_scanner.py health            # System health check
+  python3 bug_bounty_scanner.py history           # View activity history
+
+HISTORY OPTIONS:
+  --recent N                 # Show N recent activities (default: 10)
+  --summary N                # Show summary for last N days (default: 30)
+  --scans target             # Show scan history for specific target
+  --updates                  # Show update history
+  --search term              # Search history entries
+  --export filename          # Export history to file
 
 EXAMPLES:
   # Basic scan
@@ -346,6 +412,194 @@ EXAMPLES:
 For more information, visit: https://github.com/your-repo/bug-bounty-automation
         """
         print(help_text)
+    
+    def admin_menu(self):
+        """Hidden admin menu - password protected"""
+        if not hasattr(self, 'git_sync') or not self.git_sync:
+            print("❌ Admin features not available (git sync module not found)")
+            return
+            
+        print("\n🔒 Admin Access Required")
+        password = getpass.getpass("Enter admin password: ")
+        
+        # Verify password
+        if not self.git_sync.verify_password(password):
+            print("❌ Invalid password!")
+            return
+        
+        while True:
+            print("\n" + "=" * 50)
+            print("🔧 ADMIN CONTROL PANEL")
+            print("=" * 50)
+            print("1. 🚀 Start Auto Git Sync")
+            print("2. 🛑 Stop Auto Git Sync")
+            print("3. 📊 Git Sync Status")
+            print("4. 🔄 Manual Git Sync")
+            print("5. 🏥 Deep System Diagnostics")
+            print("6. 🔧 Reset All Configurations")
+            print("7. 📋 Export Complete System State")
+            print("8. 🚪 Exit Admin Panel")
+            print("=" * 50)
+            
+            choice = input("\nSelect option (1-8): ").strip()
+            
+            if choice == "1":
+                print("🚀 Starting Auto Git Sync...")
+                if self.git_sync.start_auto_sync(password):
+                    print("✅ Auto-sync is now running in background")
+                    print("💡 Your code changes will be automatically synced to GitHub")
+                    input("Press Enter to continue...")
+            
+            elif choice == "2":
+                print("🛑 Stopping Auto Git Sync...")
+                self.git_sync.stop_auto_sync()
+                input("Press Enter to continue...")
+            
+            elif choice == "3":
+                print("📊 Git Sync Status:")
+                self.git_sync.status()
+                input("Press Enter to continue...")
+            
+            elif choice == "4":
+                print("🔄 Manual Git Sync...")
+                self.git_sync.manual_sync(password)
+                input("Press Enter to continue...")
+            
+            elif choice == "5":
+                self.deep_system_diagnostics()
+                input("Press Enter to continue...")
+            
+            elif choice == "6":
+                self.reset_all_configs()
+                input("Press Enter to continue...")
+            
+            elif choice == "7":
+                self.export_system_state()
+                input("Press Enter to continue...")
+            
+            elif choice == "8":
+                print("🚪 Exiting admin panel...")
+                break
+            
+            else:
+                print("❌ Invalid option. Please select 1-8.")
+                input("Press Enter to continue...")
+    
+    def deep_system_diagnostics(self):
+        """Run deep system diagnostics"""
+        print("\n🔍 Running Deep System Diagnostics...")
+        print("=" * 40)
+        
+        # Check git status
+        try:
+            import subprocess
+            result = subprocess.run(['git', 'status', '--porcelain'], 
+                                  capture_output=True, text=True)
+            if result.stdout.strip():
+                print("📝 Uncommitted changes detected:")
+                print(result.stdout)
+            else:
+                print("✅ Git repository is clean")
+        except:
+            print("⚠️  Git status check failed")
+        
+        # Check system resources
+        try:
+            import psutil
+            print(f"💾 Memory usage: {psutil.virtual_memory().percent}%")
+            print(f"💽 Disk usage: {psutil.disk_usage('/').percent}%")
+            print(f"🖥️  CPU usage: {psutil.cpu_percent()}%")
+        except ImportError:
+            print("⚠️  System resource monitoring not available (install psutil)")
+        
+        # Check network connectivity
+        try:
+            import urllib.request
+            urllib.request.urlopen('https://github.com', timeout=5)
+            print("🌐 GitHub connectivity: ✅ OK")
+        except:
+            print("🌐 GitHub connectivity: ❌ Failed")
+        
+        # Check tool versions
+        tools = ['git', 'python3', 'pip']
+        for tool in tools:
+            try:
+                result = subprocess.run([tool, '--version'], capture_output=True, text=True)
+                version = result.stdout.strip().split('\n')[0]
+                print(f"🔧 {tool}: {version}")
+            except:
+                print(f"🔧 {tool}: ❌ Not found")
+    
+    def reset_all_configs(self):
+        """Reset all configuration files"""
+        print("\n⚠️  WARNING: This will reset ALL configurations!")
+        print("This includes:")
+        print("- Email settings")
+        print("- API keys")
+        print("- Tool configurations")
+        print("- Custom settings")
+        
+        confirm = input("\nType 'RESET' to confirm: ")
+        if confirm == 'RESET':
+            try:
+                self.config_manager.reset_all_configs()
+                print("✅ All configurations reset")
+            except Exception as e:
+                print(f"❌ Reset failed: {e}")
+        else:
+            print("❌ Reset cancelled")
+    
+    def export_system_state(self):
+        """Export complete system state"""
+        try:
+            from datetime import datetime
+            import json
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"system_state_{timestamp}.json"
+            
+            # Collect system state
+            state = {
+                "timestamp": timestamp,
+                "version": self.version,
+                "python_version": sys.version,
+                "working_directory": str(Path.cwd()),
+            }
+            
+            # Add git status if available
+            try:
+                import subprocess
+                result = subprocess.run(['git', 'status', '--porcelain'], 
+                                      capture_output=True, text=True)
+                state["git_status"] = "clean" if not result.stdout.strip() else "modified"
+                
+                # Get git info
+                branch = subprocess.run(['git', 'branch', '--show-current'], 
+                                      capture_output=True, text=True).stdout.strip()
+                state["git_branch"] = branch
+            except:
+                state["git_status"] = "unknown"
+            
+            # Add tool status
+            if hasattr(self, 'tool_manager'):
+                try:
+                    state["tool_status"] = self.tool_manager.check_tool_status()
+                except:
+                    state["tool_status"] = "error"
+            
+            # Add config status
+            if hasattr(self, 'config_manager'):
+                try:
+                    state["config_status"] = self.config_manager.validate_all_configs()
+                except:
+                    state["config_status"] = "error"
+            
+            with open(filename, 'w') as f:
+                json.dump(state, f, indent=2)
+            
+            print(f"✅ System state exported to: {filename}")
+        except Exception as e:
+            print(f"❌ Export failed: {e}")
 
 async def main():
     """Main entry point"""
@@ -385,8 +639,20 @@ async def main():
     # Health command
     subparsers.add_parser('health', help='System health check')
     
+    # History command
+    history_parser = subparsers.add_parser('history', help='View activity history')
+    history_parser.add_argument('--recent', type=int, default=10, help='Show recent activity (default: 10)')
+    history_parser.add_argument('--summary', type=int, help='Show activity summary for N days (default: 30)')
+    history_parser.add_argument('--scans', help='Show scan history for target')
+    history_parser.add_argument('--updates', action='store_true', help='Show update history')
+    history_parser.add_argument('--search', help='Search history entries')
+    history_parser.add_argument('--export', help='Export history to file')
+    
     # Help command
     subparsers.add_parser('help', help='Show detailed help')
+    
+    # Hidden admin command - not shown in help
+    subparsers.add_parser('admin', help=argparse.SUPPRESS)
     
     args = parser.parse_args()
     
@@ -464,8 +730,77 @@ async def main():
         except Exception as e:
             print(f"❌ Health check failed: {e}")
     
+    elif args.command == 'history':
+        # Handle history command
+        if args.summary is not None:
+            days = args.summary if args.summary > 0 else 30
+            summary = framework.history.get_activity_summary(days)
+            
+            print(f"\n📊 Activity Summary (Last {days} days)")
+            print("=" * 50)
+            print(f"📈 Total Activities: {summary.get('total_activities', 0)}")
+            print(f"✅ Success Rate: {summary.get('success_rate', 0)}%")
+            
+            if summary.get('activities_by_type'):
+                print("\n🎯 Activities by Type:")
+                for activity_type, count in summary.get('activities_by_type', {}).items():
+                    print(f"   {activity_type}: {count}")
+            
+            if summary.get('activities_by_status'):
+                print("\n📊 Activities by Status:")
+                for status, count in summary.get('activities_by_status', {}).items():
+                    print(f"   {status}: {count}")
+            
+            if summary.get('top_targets'):
+                print("\n🎯 Most Active Targets:")
+                for target, count in list(summary['top_targets'].items())[:5]:
+                    print(f"   {target}: {count} scans")
+        
+        elif args.scans:
+            entries = framework.history.get_scan_history(target=args.scans)
+            print(f"\n🔍 Scan History for: {args.scans}")
+            print("=" * 50)
+            for entry in entries:
+                timestamp = datetime.fromisoformat(entry['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+                status_emoji = '✅' if entry['status'] == 'success' else '❌'
+                duration = f" ({entry['duration']:.1f}s)" if entry['duration'] > 0 else ""
+                print(f"{status_emoji} [{timestamp}] {entry['description']}{duration}")
+        
+        elif args.updates:
+            entries = framework.history.get_update_history()
+            print("\n🔄 Update History")
+            print("=" * 30)
+            for entry in entries:
+                timestamp = datetime.fromisoformat(entry['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+                status_emoji = '✅' if entry['status'] == 'success' else '❌'
+                print(f"{status_emoji} [{timestamp}] {entry['description']}")
+        
+        elif args.search:
+            entries = framework.history.search_history(args.search)
+            print(f"\n🔍 Search Results for: '{args.search}'")
+            print("=" * 50)
+            for entry in entries[:20]:  # Show max 20 results
+                timestamp = datetime.fromisoformat(entry['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+                status_emoji = '✅' if entry['status'] == 'success' else '❌'
+                target_str = f" → {entry['target']}" if entry['target'] else ""
+                print(f"{status_emoji} [{timestamp}] {entry['description']}{target_str}")
+        
+        elif args.export:
+            success = framework.history.export_history(args.export)
+            if success:
+                print(f"✅ History exported to: {args.export}")
+            else:
+                print("❌ Export failed")
+        
+        else:
+            # Default: show recent activity
+            framework.history.display_recent_activity(args.recent)
+    
     elif args.command == 'help':
         framework.show_help()
+    
+    elif args.command == 'admin':
+        framework.admin_menu()
 
 if __name__ == "__main__":
     try:
